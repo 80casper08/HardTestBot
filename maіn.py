@@ -1,145 +1,28 @@
+import asyncio import os from aiogram import Bot, Dispatcher, types, F from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery from aiogram.fsm.storage.memory import MemoryStorage from flask import Flask from threading import Thread from questions import sections from dotenv import load_dotenv
 
-import asyncio
-import os
-import random
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from flask import Flask
-from threading import Thread
-from dotenv import load_dotenv
-from questions import op_questions, general_questions, lean_questions, hard_questions
+load_dotenv() TOKEN = os.getenv("TOKEN")
 
-load_dotenv()
-TOKEN = os.getenv("TOKEN")
-
-bot = Bot(token=TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
-
-class QuizState(StatesGroup):
-    category = State()
-    question_index = State()
-    selected_options = State()
-    score = State()
-    total = State()
+bot = Bot(token=TOKEN) dp = Dispatcher(storage=MemoryStorage())
 
 user_data = {}
 
-def get_keyboard(options, selected_indices):
-    buttons = []
-    for i, (text, _) in enumerate(options):
-        prefix = "✅ " if i in selected_indices else ""
-        buttons.append([InlineKeyboardButton(text=prefix + text, callback_data=f"option_{i}")])
-    buttons.append([InlineKeyboardButton(text="✅ Підтвердити", callback_data="confirm")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+Flask вебсервер для підтримки 24/7
 
-@dp.message(F.text == "/start")
-async def start_handler(message: types.Message, state: FSMContext):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("🎁 ОП", callback_data="op")],
-        [InlineKeyboardButton("📚 Загальні", callback_data="general")],
-        [InlineKeyboardButton("⚙️ Lean", callback_data="lean")],
-        [InlineKeyboardButton("💪 Hard Test", callback_data="hard")],
-    ])
-    await message.answer("Вибери розділ тесту:", reply_markup=keyboard)
-    await state.clear()
+app = Flask(name)
 
-@dp.callback_query(F.data.in_(["op", "general", "lean", "hard"]))
-async def select_category(callback: CallbackQuery, state: FSMContext):
-    category = callback.data
-    questions = {
-        "op": op_questions,
-        "general": general_questions,
-        "lean": lean_questions,
-        "hard": hard_questions,
-    }[category]
-    random.shuffle(questions)
-    await state.update_data(
-        category=category,
-        question_index=0,
-        selected_options=[],
-        score=0,
-        total=len(questions),
-        questions=questions,
-    )
-    await send_question(callback.message, state)
+@app.route('/') def home(): return "🟢 Бот працює!"
 
-async def send_question(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    index = data["question_index"]
-    questions = data["questions"]
-    if index >= len(questions):
-        await finish_quiz(message, state)
-        return
-    question = questions[index]
-    selected = data.get("selected_options", [])
-    keyboard = get_keyboard(question["options"], selected)
-    await message.answer(question['text'], reply_markup=keyboard)
+def run_flask(): app.run(host='0.0.0.0', port=8080)
 
-@dp.callback_query(F.data.startswith("option_"))
-async def toggle_option(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    index = int(callback.data.split("_")[1])
-    selected = data.get("selected_options", [])
-    if index in selected:
-        selected.remove(index)
-    else:
-        selected.append(index)
-    await state.update_data(selected_options=selected)
-    await callback.message.edit_reply_markup(reply_markup=get_keyboard(
-        data["questions"][data["question_index"]]["options"],
-        selected
-    ))
-    await callback.answer()
+def keep_alive(): Thread(target=run_flask).start()
 
-@dp.callback_query(F.data == "confirm")
-async def confirm_answer(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    question = data["questions"][data["question_index"]]
-    correct_indices = [i for i, opt in enumerate(question["options"]) if opt[1]]
-    selected = data["selected_options"]
-    if set(correct_indices) == set(selected):
-        data["score"] += 1
-    data["question_index"] += 1
-    data["selected_options"] = []
-    await state.set_data(data)
-    await send_question(callback.message, state)
+Кнопки розділів
 
-async def finish_quiz(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    score = data["score"]
-    total = data["total"]
-    percent = round(score / total * 100)
-    if percent >= 90:
-        result = "💯 Відмінно"
-    elif percent >= 70:
-        result = "👍 Добре"
-    elif percent >= 50:
-        result = "👌 Задовільно"
-    else:
-        result = "❌ Погано"
-    await message.answer(f"Тест завершено!
-Результат: {score}/{total} ({percent}%)
-Оцінка: {result}")
-    await state.clear()
+def get_sections_keyboard(): kb = InlineKeyboardMarkup() for key in sections: kb.add(InlineKeyboardButton(text=key, callback_data=key)) return kb
 
-# Flask
-app = Flask(__name__)
-@app.route('/')
-def home():
-    return "🟢 Бот працює!"
+@dp.message(F.text == "/start") async def cmd_start(message: types.Message): await message.answer("Оберіть розділ:", reply_markup=get_sections_keyboard())
 
-def run_flask():
-    app.run(host='0.0.0.0', port=8080)
+@dp.callback_query(F.data.in_(sections.keys())) async def start_quiz(callback: CallbackQuery): category = callback.data user_id = callback.from_user.id question_set = sections[category] for q in question_set: random.shuffle(q['options']) user_data[user_id] = { "questions": question_set, "q_index": 0, "score": 0, "selected": set() } await send_question(callback)
 
-def keep_alive():
-    Thread(target=run_flask).start()
+@dp.callback_query(F.data.startswith("opt_")) async def handle_option(callback: CallbackQuery): user_id = callback.from_user.id data =
 
-async def main():
-    keep_alive()
-    await dp.start_polling(bot)
-
-if __name__ == '__main__':
-    asyncio.run(main())
